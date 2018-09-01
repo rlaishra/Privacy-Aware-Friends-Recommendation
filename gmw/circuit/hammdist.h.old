@@ -1,0 +1,44 @@
+//  hammdist.h
+
+#ifndef __HAMM_DIST__BY_KLOU_
+#define __HAMM_DIST__BY_KLOU_
+
+#include "circuit.h"
+#include <cassert>
+
+class CHammDist:public CCircuit
+{
+public:
+    BOOL Create(int nParties, const vector<int>& vParams);
+public:
+    int	GetNumBits(int decimal);
+    void InitGates();
+    void PutOutputLayer();
+    void PutAddLayer();
+    void PutHammLayer(int consumer_id);
+private:
+    int	m_nRep;         // # of bits for hamming distance
+    int	num_items;
+    int gates_noninput;
+    int num_servers;
+    int m_nConsumer;
+    int temp_id;
+    int OutputBits;
+    int m_nTopK;
+    vector<int> comp_id;
+    vector<int> m_vAddLayerOutputStart;
+    vector<int> m_vAddLayerOutputEnd;
+    vector<int> m_vHammOutputStart;
+    vector<int> m_vHammOutputEnd;
+    vector<int> m_vAddInputStart;
+    vector<int> m_vAddInputEnd;
+    vector<int> m_vTopKCompareStart;
+    vector<int> m_vTopKCompareEnd;
+    vector<int> m_vTopKOriginalStart;
+    vector<int> m_vTopKOriginalEnd;
+    
+};
+
+
+
+#endif //__HAMM_DIST__BY_KLOU_

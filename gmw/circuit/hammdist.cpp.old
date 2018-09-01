@@ -1,0 +1,259 @@
+//  hammdist.cpp
+
+#include "hammdist.h"
+#include <cassert>
+#include <cmath> 
+using namespace std;
+
+// creates the binary circuit for computing hamming distance
+// input: the number of parties
+//        the number of values of each party
+// output: bool
+
+BOOL CHammDist::Create(int nParties, const vector<int>& vParams)
+{
+    m_nNumParties=nParties;
+    if( vParams.size() < 1 )
+	{
+		cout << "Error! This circuit needs one parameter: #items." << endl;
+		return FALSE;
+	}
+    num_items=vParams[0];           // # of items of each party
+    m_nConsumer=vParams[1];
+    m_nTopK=vParams[2];
+    num_servers=nParties-m_nConsumer;
+    m_vNumVBits.resize(m_nNumParties, 1);	// # of bits of each party's value
+    m_nRep=GetNumBits(num_items);
+
+    //======================================================================    
+    //Gates for input
+    m_vInputStart.resize(m_nNumParties);
+    m_vInputEnd.resize(m_nNumParties);
+    
+    m_nFrontier=2;
+    for (int i=0; i<m_nNumParties; i++) {
+	m_vInputStart[i]=m_nFrontier;
+        for (int j=0; j<num_items; j++, m_nFrontier++) {}
+	m_vInputEnd[i]=m_nFrontier-1;
+    }
+    //======================================================================
+    // Computes roughly # of gates
+    int num_gatesinput=2+m_nNumParties*num_items;
+
+    int num_addgates_hamm=(num_items-1)*m_nConsumer*num_servers;	//# of ADD gates in the circuit
+    int num_eachaddgate_hamm=6*m_nRep;	// # of element gates in one ADD gate roughly
+    int num_xorgates_hamm=num_servers*num_items*m_nConsumer*m_nRep;
+    int num_gate_hammlayer=num_xorgates_hamm+num_addgates_hamm*num_eachaddgate_hamm;
+
+    int num_addgates_add=(num_servers-1)*m_nConsumer;
+    int num_eachaddgate_add=6*OutputBits;
+    int num_xorgates_add=OutputBits*num_servers*m_nConsumer;
+    int num_gate_addlayer=num_xorgates_add+num_addgates_add*num_eachaddgate_add;
+
+    int num_eachGEgate=5*OutputBits;
+    int num_eachMUXgate_compare=3*OutputBits;
+    int num_eachMUXgate_original=3*num_items;
+    int num_gate_topklayer=(num_eachGEgate+num_eachMUXgate_compare+num_eachMUXgate_original)*m_nNumParties;
+
+    int num_gatesoutput=num_items*m_nConsumer;
+    int num_gatesother=num_gate_hammlayer+num_gate_addlayer+num_gatesoutput+num_gate_topklayer;
+    gates_noninput=num_gatesother+num_gatesoutput+1000;
+  
+    InitGates();
+    //==============================================================
+    // Construct circuit
+    m_vAddLayerOutputStart.resize(m_nConsumer,1);
+    m_vAddLayerOutputEnd.resize(m_nConsumer,0);
+
+	for(int t=num_servers;t<m_nNumParties;t++)
+	{
+		PutHammLayer(t);
+		PutAddLayer();
+	
+		m_vAddLayerOutputStart[t-num_servers]=temp_id;
+		m_vAddLayerOutputEnd[t-num_servers]=m_nFrontier-1; 
+	}
+    
+	m_vTopKCompareStart.resize(m_nTopK,1);
+	m_vTopKCompareEnd.resize(m_nTopK,0);
+	m_vTopKOriginalStart.resize(m_nTopK,1);
+	m_vTopKOriginalEnd.resize(m_nTopK,0);
+    
+	for(int i=0;i<m_nTopK;i++)
+	{
+		m_vTopKCompareStart[i]=m_vAddLayerOutputStart[i];
+		m_vTopKCompareEnd[i]=m_vAddLayerOutputEnd[i];
+		m_vTopKOriginalStart[i]=m_vInputStart[num_servers+i];
+		m_vTopKOriginalEnd[i]=m_vInputEnd[num_servers+i];
+	}	
+	for (int i=m_nTopK; i<m_nConsumer; i++) 
+	{
+        	int compare_InputA=m_vAddLayerOutputStart[i];
+		int original_InputA=m_vInputStart[i];
+        	for (int j=0; j<m_nTopK; j++) 
+		{
+			int compare_InputB=m_vTopKCompareStart[j];
+	    		int original_InputB=m_vTopKOriginalStart[j];
+            		int out_GE=PutGEGate(compare_InputA,compare_InputB,OutputBits);
+			int out_GE_Opposite=PutXORGate(out_GE,1);
+            		int compare_Big=PutMUXGate(compare_InputA,compare_InputB,out_GE,OutputBits,0);
+			int compare_Small=PutMUXGate(compare_InputA,compare_InputB,out_GE_Opposite,OutputBits,0);
+			m_vTopKCompareStart[j]=compare_Big;
+			m_vTopKCompareEnd[j]=compare_Big+OutputBits-1;
+			compare_InputA=compare_Small;
+			int original_Big=PutMUXGate(original_InputA,original_InputB,out_GE,num_items,0);
+			int original_Small=PutMUXGate(original_InputA,original_InputB,out_GE_Opposite,num_items,0);
+			m_vTopKOriginalStart[j]=original_Big;
+			m_vTopKOriginalEnd[j]=original_Big+num_items-1;
+			original_InputA=original_Small;	
+        	}
+	}
+    
+    //================================================================
+    //Gates for output
+    PutOutputLayer();
+    PatchParentFields();
+    
+    return TRUE;
+}
+
+
+// gets # of bits for a decimal number
+// input: decimal number
+// output: # of bits for the input
+// note: input should not be a negative int
+int CHammDist::GetNumBits(int decimal)
+{
+    int num_bits = 1;
+    int tmp;
+    
+    if (decimal < 0){
+        puts("CP2PCircuit::GetNumBits(int): negative input");
+        exit(-1);
+    }
+    else if(decimal == 0){
+        return 0;
+    }
+    else if(decimal == 1){
+        return 1;
+    }
+    
+    tmp = decimal;
+    while(1==1){
+        num_bits++;
+        tmp = tmp/2;
+        if (tmp <= 1){
+            break;
+        }
+    }
+    
+    return num_bits;
+}
+
+void CHammDist::InitGates()
+{
+	m_othStartGate = m_nFrontier;
+	m_nNumGates = m_nFrontier + gates_noninput;
+	m_pGates = new GATE[m_nNumGates];
+	m_nNumXORs = 0;
+
+	GATE* gate;
+
+	for(int i=0; i<m_othStartGate; i++)
+	{
+		gate = m_pGates + i;
+		gate->p_ids = 0;
+		gate->p_num = 0;
+		gate->left = -1;
+		gate->right = -1;
+		gate->type = 0;
+	}	
+}
+
+void CHammDist::PutOutputLayer()
+{
+	m_vOutputStart.resize(m_nNumParties, 1);
+	m_vOutputEnd.resize(m_nNumParties, 0);
+	for (int i=0;i<m_nTopK;i++)
+	{
+		m_vOutputStart[i]=m_vTopKOriginalStart[i];
+		m_vOutputEnd[i]=m_vTopKOriginalEnd[i];
+	}
+	/*m_vOutputStart[0]=m_vTopKOriginalStart[0];
+	m_vOutputEnd[0]=m_vTopKOriginalEnd[0];
+	m_vOutputStart[1]=m_vTopKCompareStart[0];
+	m_vOutputEnd[1]=m_vTopKCompareEnd[0];
+	for(int i=0;i<m_nConsumer;i++)
+	{
+		m_vOutputStart[i+num_servers]=m_vAddLayerOutputStart[i];
+		m_vOutputEnd[i+num_servers]=m_vAddLayerOutputEnd[i];	
+	}*/
+	m_nNumGates = m_nFrontier;
+}
+
+void CHammDist::PutHammLayer(int consumer_id)
+{
+	m_vHammOutputStart.resize(num_servers,1);
+	m_vHammOutputEnd.resize(num_servers,0);
+	for (int i=0; i<num_servers; i++) {
+		int k=m_vInputStart[consumer_id];          //consumer input
+		comp_id.resize(num_items,0);
+		int p=0;
+        	for (int j=m_vInputStart[i]; j<=m_vInputEnd[i]; j++,k++,p++) {
+            		comp_id[p]=PutXORGate(j,k);
+            		for (int m=1; m<m_nRep; m++) {
+                		PutXORGate(0,0);
+            		}
+        	}
+		int size=comp_id.size();
+		int gateid=comp_id[0];
+		for (int m=1; m<size; m++){
+			gateid=PutAddGate(gateid,comp_id[m],m_nRep);
+		}
+		m_vHammOutputStart[i]=gateid;
+		m_vHammOutputEnd[i]=m_nFrontier-1;
+	}
+}
+
+void CHammDist::PutAddLayer()
+{
+	OutputBits=GetNumBits(num_items*num_servers);
+	m_vAddInputStart.resize(num_servers,1);
+	m_vAddInputEnd.resize(num_servers,0);
+	for (int i=0;i<num_servers;i++)
+	{
+		m_vAddInputStart[i]=m_nFrontier;
+		for (int j=m_vHammOutputStart[i];j<=m_vHammOutputEnd[i];j++)
+		{
+			PutXORGate(j,0);
+		}
+		for (int k=m_nRep;k<OutputBits;k++)
+		{
+			PutXORGate(0,0);
+		}
+		m_vAddInputEnd[i]=m_nFrontier-1;
+	} 
+	temp_id=m_vAddInputStart[0];
+	for (int i=1;i<num_servers;i++)
+	{
+		temp_id=PutAddGate(temp_id,m_vAddInputStart[i],OutputBits);
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
